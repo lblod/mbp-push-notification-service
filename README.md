@@ -1,346 +1,157 @@
-# Mu Javascript template
+# mbp-push-notification-service
 
-Template for writing semantic.works services in JavaScript using [Express 4](https://expressjs.com/)
+Stores **saved filters** for LokaalBeslist users (keyed to the MBP-authenticated account) and runs a **daily scan** that checks whether each saved filter has new matching agenda points. When it does, this service calls `mbp-notification-service` to deliver an inbox message via the Digitaal Vlaanderen Notificaties module.
 
-## Tutorials
-
-### Develop your first microservice
-
-Requires: a semantic.works stack, like mu-project.
-
-Create a new folder for your microservice.
-
-In the folder, create your microservice in `app.js`:
-
-```js
-import { app } from 'mu'
-
-app.get('/hello', function (req, res) {
-  res.send('Hello mu-javascript-template')
-})
-```
-
-This service will respond with 'Hello mu-javascript-template' when receiving a GET request on '/hello'.
-
-Add the mu-javascript-template to your `docker-compose.yml` with the sources mounted directly.
-
-```yml
-version: '3.4'
-services:
-  your-microservice-name:
-    image: semtech/mu-javascript-template
-    environment:
-      NODE_ENV: 'development'
-    ports:
-      - 8888:80
-    volumes:
-      - /absolute/path/to/your/sources/:/app/
-```
-
-Next, create the service by running
+Part of the [LBLOD](https://lblod.github.io) stack, built on the [mu-semtech](https://mu.semte.ch) microservice framework.
 
 ```
-docker-compose up -d your-microservice-name
+Frontend  ──POST /saved-filters──►  this service (auth via mu-session-id)
+                                     INSERT ext:hasSavedFilter on the account
+
+cron      ──POST /send-notifications──►  this service
+                                          mu-search for new matches per filter
+                                          ──POST /notifications/user──►  mbp-notification-service
+                                                                          ──POST /api/v2/notificaties──► Notificaties module
+                                          UPDATE ext:lastNotifiedAt
 ```
 
-A `curl` call to the microservice will show you to message
+## Data model
 
-```bash
-curl http://localhost:8888/hello
-# Hello mu-javascript-template
-```
-
-## How-to
-
-### Develop in a mu.semte.ch stack
-
-Requires:
-
-- a semantic.works stack, like mu-project
-- 'Develop your first microservice'
-
-When developing inside an existing mu.semte.ch stack, it is easiest to set the development mode by setting the `NODE_ENV` environment variable to `development` and mount the sources directly. This makes it easy to setup links to the database and the dispatcher. Livereload is enabled automatically when running in development mode.
-
-```yml
-version: ...
-services:
-  ...
-  your-microservice-name:
-    image: semtech/mu-javascript-template
-    environment:
-      NODE_ENV: "development"
-    volumes:
-      - /absolute/path/to/your/sources/:/app/
-```
-
-Mounting the sources will automatically populate the local `node_modules` folder and will provide a package-lock.json (providing you don't opt out of the generation). This should provide enough initial support for editor hints.
-
-### Build a microservice based on mu-javascript-template
-
-Requires:
-
-- a semantic.works stack, like mu-project
-- 'Develop your first microservice'
-
-Add a Dockerfile with the following contents:
-
-```docker
-FROM semtech/mu-javascript-template
-LABEL maintainer="madnificent@gmail.com"
-```
-
-There are various ways to build a Docker image. For a production service we advise to setup automatic builds, but here we will build it locally. You can choose any name, but we will call ours 'say-hello-service'.
-
-From the root of your microservice folder execute the following command:
-
-```bash
-docker build -t say-hello-service .
-```
-
-Add the newly built service to your application stack in `docker-compose.yml`
-
-```yml
-version: ...
-services:
-  ...
-  say-hello:
-    image: say-hello-service
-```
-
-Launch the new container in your app
-
-```bash
-docker-compose up -d say-hello
-```
-
-### Attach the Chrome debugger
-
-Requires: 'Develop in a mu.semte.ch stack'.
-
-When running in development mode, you can attach the Chrome debugger to your microservice and add breakpoints as you're used to. The chrome debugger requires port 9229 to be forwarded, and your service to run in development mode. After launching your service, open Google Chrome or Chromium, and visit [chrome://inspect/](chrome://inspect/). Once the service is launched, a remote target on localhost should pop up.
-
-Update your service definition in `docker-compose.yml` as follows:
-
-```yml
-version: ...
-services:
-  your-microservice-name:
-    ...
-    ports:
-      - 9229:9229
-```
-
-Next, recreate the container by executing
-
-```bash
-docker-compose up -d your-microservice-name
-```
-
-### Access your microservice directly
-
-Requires: 'Build a microservice based on mu-javascript-template' or 'Develop in a mu.semte.ch stack'
-
-If you doubt your requests are arriving at your microservice correctly, you can publish it port to access it directly. In the example below, port 8888 is used to access the service directly.
-
-Note this means you will not have the headers set by the identifier and dispatcher.
-
-Update your service definition in `docker-compose.yml` as follows:
-
-```yml
-    your-microservice-name:
-      ...
-      ports:
-        - 8888:80
-```
-
-Next, recreate the container by executing
-
-```bash
-docker-compose up -d your-microservice-name
-```
-
-### Add a dependency to your microservice
-
-You can install additional dependencies by including a `package.json` file next to your `app.js`. It works as you would expect: just define the packages in the `dependencies` section of the `package.json`. They will be installed automatically at build time and in development mode. There is no need to restart the container.
-
-### Handle delta's from the delta-service
-
-If you are building a reactive service that should execute certain logic based on changes in the database, you want to hook it up to the [delta-notifier](https://github.com/mu-semtech/delta-notifier/). Some extra steps need to be taken to properly handle delta's, specifically the route handling delta's will need to use a specific bodyParser.
-
-The default bodyParser provided by the template will only accept `application/vnd.api+json` and the delta-notifier is sending `application/json` content. Aside from that the body of a delta message may be very large, often several megabytes. By specifying the bodyParser on the route accepting delta messages you can easily modify it when required.
-
-The mu script `add-delta-handler` can be ran to update your app.js file:
-
-```bash
-mu script add-delta-handler
-```
-
-The resulting changes will look similar to:
-
-```javascript
-// app.js
-import bodyParser from 'body-parser'
-// ...
-
-app.post('/delta', bodyParser.json({ limit: '50mb' }), function (req, res) {
-  //...
-})
-```
-
-### Clean up on service exit
-
-Most services just want to stop answering questions when the service exits, some need to clean up state. Cleaning up state can be done by supplying an async fincution to `beforeExit`. The service will stop accepting connections but will execute this async function before gracefully exiting. Most setups provide up to 10 seconds for the container to cleanly exit.
-
-An example
-
-```javascript
-import { beforeExit } from 'mu'
-
-beforeExit(async () => {
-  console.log('Cleaning up...')
-  await new Promise(acc => setTimeout(acc, 1000))
-  console.log('Finished cleaning up.')
-})
-```
-
-## Reference
-
-### Framework
-
-The mu-javascript-template is built on ExpressJS. Check [Express' Getting Started guide](https://expressjs.com/en/starter/basic-routing.html) to learn how to build a REST API in Express.
-
-The Express application can be imported from the `'mu'` package as follows:
-
-```javascript
-import { app } from 'mu'
-```
-
-Routes can be defined on the application as explained in the [Express routing guide](https://expressjs.com/en/guide/routing.html). For example:
-
-```javascript
-import { app } from 'mu'
-
-app.get('/hello', function (req, res) {
-  res.send('Hello mu-javascript-template')
-})
-```
-
-### Helpers
-
-The template offers some helpers. They can all be imported from the `'mu'` package like
+Stored in `<http://mu.semte.ch/graphs/sessions>` alongside the account/session triples produced by `mbp-sso-service`.
 
 ```
-import { app, uuid, sparqlEscapeString } from 'mu'
+<account-uri> ext:hasSavedFilter <filter-uri> .
 
-app.get('/', function( req, res ) {
-  const id = uuid();
-  ...
-} );
+<filter-uri>
+  a ext:SavedFilter ;
+  mu:uuid "{uuid}" ;
+  dcterms:title "Mobiliteit Aalst" ;
+  ext:filterData "{...AgendaItemsParams JSON...}" ;
+  ext:notify true ;            # toggled from the UI; filters with notify=false are skipped in the scan
+  dcterms:created "..." ;
+  dcterms:modified "..." ;
+  ext:lastNotifiedAt "..." .   # set by the daily scan
 ```
 
-You can also import the whole `mu` object like
+`ext:filterData` is the JSON object the LokaalBeslist frontend uses to drive the agenda-items search (`AgendaItemsParams` — `keyword`, `municipalityLabels`, `themeIds`, `governingBodyClassificationIds`, `plannedStartMin/Max`, …). The backend re-executes it via mu-search at scan time.
 
-```
-import mu from 'mu';
+## API
 
-mu.app.get('/', function( req, res ) {
-  const id = mu.uuid();
-  ...
-} );
-```
+### `POST /saved-filters`  *(authenticated)*
 
-The following helper functions are provided by the template
+Auth via the `mu-session-id` header set by mu-identifier; the session is looked up in the sessions graph to resolve the account URI.
 
-- `query(query, options) => Promise`: Function for sending queries to the triplestore. Options is an object which may include `sudo` and `scope` keys.
-- `update(query, options) => Promise`: Function for sending updates to the triplestore. Options is an object which may include `sudo` and `scope` keys.
-- `uuid() => string`: Generates a random UUID (e.g. to construct new resource URIs)
-
-The following SPARQL escape helpers are provided to construct safe SPARQL query strings
-
-- `sparqlEscapeString(value) => string`
-- `sparqlEscapeUri(value) => string`
-- `sparqlEscapeDecimal(value) => string`
-- `sparqlEscapeInt(value) => string`
-- `sparqlEscapeFloat(value) => string`
-- `sparqlEscapeDate(value) => string`
-- `sparqlEscapeDateTime(value) => string`
-- `sparqlEscapeBool(value) => string`: The given value is evaluated to a boolean value in javascript. E.g. the string value `'0'` evaluates to `false` in javascript.
-- `sparqlEscape(value, type) => string`: Function to escape a value in SPARQL according to the given type. Type must be one of `'string'`, `'uri'`, `'int'`, `'float'`, `'date'`, `'dateTime'`, `'bool'`.
-
-### Error handling
-
-The template offers [an error handler](https://expressjs.com/en/guide/error-handling.html) to send error responses in a JSON:API compliant way. The handler can be imported from `'mu'` and need to be loaded at the end.
-
-```javascript
-import { app, errorHandler } from 'mu'
-
-app.get('/hello', function( req, res, next ) {
-  try {
-    ...
-  } catch (e) {
-    next(new Error('Oops, something went wrong.'))
+```json
+{
+  "data": {
+    "attributes": {
+      "name": "Mobiliteit Aalst",
+      "filter": {
+        "keyword": "mobiliteit",
+        "municipalityLabels": ["Aalst"],
+        "themeIds": ["..."],
+        "governingBodyClassificationIds": []
+      }
+    }
   }
-});
-
-app.use(errorHandler)
+}
 ```
 
-### Transpiled languages
+`201` → `{ data: { type: "saved-filters", id, attributes: { id, uri, name, filter, createdAt } } }`
 
-The template has second-class support for transpiling TypeScript and CoffeeScript. These are considered second-class and support may be removed in a minor release but not in a patch release.
+### `GET /saved-filters`  *(authenticated)*
 
-Overwriting files through the config folder may require you to stick to the original format. There are currently no guarantees on this.
+Returns all saved filters owned by the calling user.
 
-#### Coffeescript
+### `PUT /saved-filters/:id`  *(authenticated)*
 
-Any file extending to .coffee will be transpiled from coffeescript to javascript file. Sourcemaps are included for debugging.
+Updates `name`, `filter` and/or `notify` on one of the caller's saved filters.
 
-#### TypeScript
+```json
+{ "data": { "attributes": { "name": "...", "filter": { ... }, "notify": false } } }
+```
 
-Any file extending in .ts will be transpiled to a javascript file. Sources are currently not typechecked though this is subject to change. Sourcemaps are included for debugging.
+`204` on success.
 
-### Configuration
+### `DELETE /saved-filters/:id`  *(authenticated)*
 
-#### Environment variables
+Deletes one of the caller's saved filters. `204` on success.
 
-The following environment variables can be configured:
+### `POST /send-notifications`  *(internal — do **not** expose via the dispatcher)*
 
-- `NODE_ENV` (default: `production`): either `"development"` or `"production"`. The environment to start the application in. The application live reloads on changes in `"development"` mode.
-- `MAX_BODY_SIZE` (default: `100kb`): max size of the request body. See [ExpressJS documentation](https://expressjs.com/en/resources/middleware/body-parser.html#limit).
-- `HOST` (default: `0.0.0.0`): The hostname you want the service to bind to.
-- `PORT` (default: `80`): The port you want the service to bind to.
-- `ALLOW_MU_AUTH_SUDO`: Allow sudo queries when the service requests it.
-- `DEFAULT_MU_AUTH_SCOPE`: Default mu-auth-scope to use for calls.
+The daily-scan entry point. For every saved filter whose owning account has a stored `ext:rijksregisternummer`:
 
-#### Mounting `/config`
+1. Pick a `since` watermark — `ext:lastNotifiedAt` if set, otherwise `now - 24h`.
+2. Build a mu-search query from `ext:filterData` and ask `/agenda-items/search` for the count of items modified since the watermark.
+3. If `count > 0`, POST to `mbp-notification-service`'s `POST /notifications/user` with the user's RRN, a Dutch title/body referencing the filter name and count, and a deep-link back to the filter view.
+4. Advance `ext:lastNotifiedAt` to the start of the run so the next scan only sees newer changes.
 
-You may let users extend the microservice with code.
+Filters belonging to accounts without an RRN are skipped (the SSO service back-fills the RRN on next login if the ACM/IDM scope exposes it).
 
-When you import content from `./config/some-file`, the sources can be provided by the end user in `/config/some-file` (even in production mode).
+Response: `{ ok, scanned, notified, skipped, errors }`.
 
-You may provide default values for each of these files. The sources provided by the app are merged with the sources provided by the microservice, with the app's configuration taking precedence.
+## Configuration
 
-### Logging
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `MU_SPARQL_ENDPOINT` | yes | — | SPARQL endpoint of the triplestore (set by the stack) |
+| `SEARCH_BASE_URL` | no | `http://search` | mu-search service URL |
+| `NOTIFICATION_SERVICE_URL` | no | `http://notification` | URL of `mbp-notification-service` |
+| `LOKAALBESLIST_PUBLIC_URL` | no | `https://lokaalbeslist.be` | Used to build the deep-link in the notification |
 
-The verbosity of logging can be configured through following environment variables:
+## Wiring into the stack
 
-- `LOG_SPARQL_ALL`: Logging of all executed SPARQL queries, read as well as update (default `true`)
-- `LOG_SPARQL_QUERIES`: Logging of executed SPARQL read queries (default: `undefined`). Overrules `LOG_SPARQL_ALL`.
-- `LOG_SPARQL_UPDATES`: Logging of executed SPARQL update queries (default `undefined`). Overrules `LOG_SPARQL_ALL`.
-- `DEBUG_AUTH_HEADERS`: Debugging of [mu-authorization](https://github.com/mu-semtech/mu-authorization) access-control related headers (default `true`)
+Add to `app-burgernabije-besluitendatabank/docker-compose.yml`:
 
-Following values are considered true: [`"true"`, `"TRUE"`, `"1"`].
+```yaml
+push-notification:
+  image: lblod/mbp-push-notification-service:latest    # or build: ../mbp-push-notification-service
+  environment:
+    NOTIFICATION_SERVICE_URL: "http://notification"
+    LOKAALBESLIST_PUBLIC_URL: "https://lokaalbeslist.be"
+```
 
-### Code hints
+Add to `mbp-dispatcher.ex` (only the CRUD routes — `/send-notifications` stays internal):
 
-The template will automatically supply a `node_modules` folder for code hints when the microservice runs in development and the sources are mounted in `/app`. You may need to restart the language server so these are picked up.
+```elixir
+post "/saved-filters", @json do
+  Proxy.forward conn, [], "http://push-notification/saved-filters"
+end
+get "/saved-filters", @json do
+  Proxy.forward conn, [], "http://push-notification/saved-filters"
+end
+delete "/saved-filters/:id", @json do
+  Proxy.forward conn, ["/" <> id], "http://push-notification/saved-filters/"
+end
+```
 
-Use the mu-script `setup-ide` to install these without running in development mode.
+Schedule the daily scan — simplest is a small cron sidecar that posts to the internal URL:
 
-### Package lock
+```yaml
+push-notification-cron:
+  image: alpine:3
+  entrypoint: ["/bin/sh", "-c"]
+  command:
+    - |
+      apk add --no-cache curl &&
+      echo "0 7 * * * curl -fsS -X POST http://push-notification/send-notifications" | crontab - &&
+      crond -f -L /dev/stdout
+```
 
-Changes to dependencies in `package.json` will be picked up and an updated `package-lock.json` will be copied into the mounted sources provided `package-lock.json` is enabled. Local packages are installed through the `package-lock.json` and the template's dependencies are merged in. The `package-lock.json` thus only contains your own dependencies and should not conflict with future upgrades in the template.
+## Frontend integration
 
-### Custom build commands
+The LokaalBeslist frontend keeps a local cache of saved filters in `localStorage` and synchronises with this service when the user is authenticated:
 
-To execute custom bash statements during the image build (e.g. to install aditional system libraries), provide an `on-build.sh` script in the root of your service. It will be automatically picked up and executed by the Docker build.
+- On `save` — POST `/saved-filters`; the returned `id` is stored as `remoteId` on the local Filter.
+- On `edit` — PUT `/saved-filters/:remoteId` (falls back to POST for filters that pre-date the backend).
+- On `delete` — DELETE `/saved-filters/:remoteId`.
+- On notification-toggle — PUT `/saved-filters/:remoteId` with `{ notify }`.
+- On session bootstrap — GET `/saved-filters` and merge into local state (filters that exist only locally are uploaded; filters that exist only on the backend are added to the local list).
+
+Anonymous users keep working off localStorage only and won't get daily notifications (no backend record, no RRN to address).
+
+## Assumptions worth verifying
+
+- The mu-search index name for agenda items is `agenda-items` (matches `app-burgernabije-besluitendatabank/config/search/config.json`).
+- Agenda items expose a `modified` date in the search index — used for the "new since last scan" filter. If the actual field is different (e.g. `created`, `dct_modified`), adjust `helpers/search.js`.
+- `helpers/search.js` translates the most common `AgendaItemsParams` fields. New filter fields added on the frontend won't be honoured until the translator is extended; this is the same set of fields handled by `frontend/app/utils/search/agenda-items-query.ts`.
