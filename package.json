@@ -1,9 +1,7 @@
 {
-  "name": "mbp-sso-service",
+  "name": "mbp-push-notification-service",
   "version": "1.0.0",
-  "type": "module",
   "dependencies": {
-    "cookie-parser": "^1.4.6",
-    "express": "^5.2.1"
+    "@lblod/mu-auth-sudo": "^0.6.2"
   }
 }
