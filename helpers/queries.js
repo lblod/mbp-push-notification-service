@@ -126,7 +126,7 @@ export async function listSavedFiltersForAccount(accountUri) {
     uri: b.filter.value,
     name: b.title.value,
     filter: safeJson(b.data.value),
-    notify: b.notify?.value !== 'false',
+    notify: parseSparqlBoolean(b.notify),
     createdAt: b.created.value,
     lastNotifiedAt: b.lastNotifiedAt?.value || null,
   }));
@@ -208,4 +208,11 @@ export async function markFilterNotified(filterUri, at) {
 
 function safeJson(text) {
   try { return JSON.parse(text); } catch { return {}; }
+}
+
+// Virtuoso serializes xsd:boolean as "0"/"1", other stores as "false"/"true".
+// Treat a missing binding as the default (notify enabled).
+function parseSparqlBoolean(binding, defaultValue = true) {
+  if (!binding) return defaultValue;
+  return binding.value !== 'false' && binding.value !== '0';
 }
