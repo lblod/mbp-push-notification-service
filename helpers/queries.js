@@ -54,11 +54,25 @@ export async function createSavedFilter({ accountUri, name, filter, notify = tru
 
 export async function updateSavedFilter({ accountUri, filterId, name, filter, notify }) {
   const now = new Date();
-  const fields = [];
-  if (typeof name === 'string') fields.push(`?filter dcterms:title ${sparqlEscapeString(name)} .`);
-  if (filter !== undefined) fields.push(`?filter ext:filterData ${sparqlEscapeString(JSON.stringify(filter))} .`);
-  if (typeof notify === 'boolean') fields.push(`?filter ext:notify ${notify ? 'true' : 'false'} .`);
-  if (!fields.length) return;
+  const deleteFields = [];
+  const insertFields = [];
+
+  if (typeof name === 'string') {
+    deleteFields.push(`?filter dcterms:title ?oldTitle .`);
+    insertFields.push(`?filter dcterms:title ${sparqlEscapeString(name)} .`);
+  }
+  if (filter !== undefined) {
+    deleteFields.push(`?filter ext:filterData ?oldData .`);
+    insertFields.push(`?filter ext:filterData ${sparqlEscapeString(JSON.stringify(filter))} .`);
+  }
+  if (typeof notify === 'boolean') {
+    deleteFields.push(`?filter ext:notify ?oldNotify .`);
+    insertFields.push(`?filter ext:notify ${notify ? 'true' : 'false'} .`);
+  }
+  if (!insertFields.length) return;
+
+  deleteFields.push(`?filter dcterms:modified ?oldModified .`);
+  insertFields.push(`?filter dcterms:modified ${sparqlEscapeDateTime(now)} .`);
 
   await updateSudo(`
     PREFIX ext:     <http://mu.semte.ch/vocabularies/ext/>
@@ -67,15 +81,11 @@ export async function updateSavedFilter({ accountUri, filterId, name, filter, no
 
     DELETE {
       GRAPH ${sparqlEscapeUri(SESSIONS_GRAPH)} {
-        ?filter dcterms:title ?oldTitle .
-        ?filter ext:filterData ?oldData .
-        ?filter ext:notify ?oldNotify .
-        ?filter dcterms:modified ?oldModified .
+        ${deleteFields.join('\n        ')}
       }
     } INSERT {
       GRAPH ${sparqlEscapeUri(SESSIONS_GRAPH)} {
-        ${fields.join('\n        ')}
-        ?filter dcterms:modified ${sparqlEscapeDateTime(now)} .
+        ${insertFields.join('\n        ')}
       }
     } WHERE {
       GRAPH ${sparqlEscapeUri(SESSIONS_GRAPH)} {
