@@ -117,6 +117,14 @@ app.post('/test-notification', async function(req, res) {
     });
   }
 
+  // TEST ONLY: optional server-side delay so you can close/background the app
+  // before the notification is actually sent. Set TEST_NOTIFICATION_DELAY_MS (e.g. 15000).
+  const delayMs = Number(process.env.TEST_NOTIFICATION_DELAY_MS) || 0;
+  if (delayMs > 0) {
+    console.log(`test-notification: waiting ${delayMs}ms before sending to ${account.rrn.slice(-4)}`);
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+
   try {
     await notifyTestMessage({ rrn: account.rrn });
     return res.status(202).json({ ok: true });
