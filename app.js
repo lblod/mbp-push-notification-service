@@ -9,7 +9,7 @@ import {
   markFilterNotified,
 } from './helpers/queries';
 import { countMatchingAgendaItems } from './helpers/search';
-import { notifySavedFilterUpdate } from './helpers/notifications';
+import { notifySavedFilterUpdate, notifyTestMessage } from './helpers/notifications';
 
 const DEFAULT_LOOKBACK_HOURS = 24;
 
@@ -101,6 +101,28 @@ app.delete('/saved-filters/:id', async function(req, res) {
   } catch (e) {
     console.error('delete saved-filter failed', e);
     return res.status(500).json({ error: 'internal_error' });
+  }
+});
+
+// Manual test endpoint — sends a simple notification to the signed-in user.
+// Authenticated via mu-session-id; resolves the caller's RRN from the session.
+app.post('/test-notification', async function(req, res) {
+  const account = await requireAccount(req, res);
+  if (!account) return;
+
+  if (!account.rrn) {
+    return res.status(409).json({
+      error: 'no_rrn',
+      message: 'No rijksregisternummer is stored for this account; cannot address a notification.',
+    });
+  }
+
+  try {
+    await notifyTestMessage({ rrn: account.rrn });
+    return res.status(202).json({ ok: true });
+  } catch (e) {
+    console.error('test-notification failed', e);
+    return res.status(502).json({ error: 'notification_failed', message: e.message });
   }
 });
 

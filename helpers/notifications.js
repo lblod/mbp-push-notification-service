@@ -7,15 +7,30 @@ export async function notifySavedFilterUpdate({ rrn, filterId, filterName, newMa
     ? `Uw opgeslagen filter "${filterName}" heeft 1 nieuw agendapunt.`
     : `Uw opgeslagen filter "${filterName}" heeft ${newMatchCount} nieuwe agendapunten.`;
 
-  const payload = {
+  return postUserNotification({
     rrn,
     title,
     body,
     linkUrl: `${LOKAALBESLIST_PUBLIC_URL}/filters/${encodeURIComponent(filterId)}`,
     linkLabel: 'Bekijk filter',
     transactieId: `lokaalbeslist:filter:${filterId}`,
-  };
+  });
+}
 
+// Fire a simple, self-contained notification to a user — used by the manual
+// test endpoint to verify the end-to-end delivery path without a saved filter.
+export async function notifyTestMessage({ rrn }) {
+  return postUserNotification({
+    rrn,
+    title: 'Testnotificatie LokaalBeslist',
+    body: 'Dit is een testnotificatie. Als u dit bericht ziet, werkt de notificatieketen.',
+    linkUrl: LOKAALBESLIST_PUBLIC_URL,
+    linkLabel: 'Open LokaalBeslist',
+    transactieId: `lokaalbeslist:test:${Date.now()}`,
+  });
+}
+
+async function postUserNotification(payload) {
   let response;
   try {
     response = await fetch(`${NOTIFICATION_SERVICE_URL}/notifications/user`, {
