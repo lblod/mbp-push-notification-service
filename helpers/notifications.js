@@ -35,7 +35,9 @@ async function postUserNotification(payload) {
   try {
     response = await fetch(`${NOTIFICATION_SERVICE_URL}/notifications/user`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      // The delivery service runs on the mu-javascript-template, whose body parser
+      // only accepts the JSON:API content type — bare application/json is dropped.
+      headers: { 'Content-Type': 'application/vnd.api+json', Accept: 'application/json' },
       body: JSON.stringify(payload),
     });
   } catch (e) {
