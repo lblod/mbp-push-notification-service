@@ -1,5 +1,5 @@
-const NOTIFICATION_SERVICE_URL = process.env.NOTIFICATION_SERVICE_URL || 'http://notification';
-const LOKAALBESLIST_PUBLIC_URL = process.env.LOKAALBESLIST_PUBLIC_URL || 'https://lokaalbeslist.be';
+const NOTIFICATION_SERVICE_URL = process.env.NOTIFICATION_SERVICE_URL || 'http://mbp-notification-delivery-service';
+const LOKAALBESLIST_PUBLIC_URL = process.env.LOKAALBESLIST_PUBLIC_URL || 'https://mbp.lokaalbeslist.lblod.info';
 
 export async function notifySavedFilterUpdate({ rrn, filterId, filterName, newMatchCount }) {
   const title = `Nieuwe agendapunten voor "${filterName}"`;
