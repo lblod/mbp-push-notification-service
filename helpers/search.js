@@ -120,6 +120,12 @@ async function searchAgendaItems(filter) {
   const params = await buildAgendaItemSearchParams(filter);
   const url = `${SEARCH_BASE_URL}/agenda-items/search?${params.toString()}`;
 
+  // TEST debug: surface the exact mu-search query so a 0-count filter can be diagnosed.
+  if (process.env.ENABLE_TEST_ENDPOINTS === 'true') {
+    console.log('[scan] mu-search query:', url);
+    console.log('[scan] filterData:', JSON.stringify(filter));
+  }
+
   let response;
   try {
     response = await fetch(url, { headers: { Accept: 'application/json' } });
