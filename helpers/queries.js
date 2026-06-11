@@ -183,7 +183,7 @@ export async function listAllNotifiableFilters() {
                 dcterms:created ?created .
         OPTIONAL { ?filter ext:lastNotifiedAt ?lastNotifiedAt }
         OPTIONAL { ?filter ext:lastSeenCount ?lastSeenCount }
-        FILTER NOT EXISTS { ?filter ext:notify false }
+        ?filter ext:notify true .
       }
     }
   `);

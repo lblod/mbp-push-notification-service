@@ -178,6 +178,7 @@ app.post('/send-notifications', async function(req, res) {
           filterId: f.id,
           filterName: f.name,
           newMatchCount: delta,
+          filter: f.filter,
         });
         await markFilterNotified(f.uri, startedAt);
         summary.notified += 1;

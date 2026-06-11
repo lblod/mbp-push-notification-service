@@ -28,7 +28,7 @@ Stored in `<http://mu.semte.ch/graphs/sessions>` alongside the account/session t
   mu:uuid "{uuid}" ;
   dcterms:title "Mobiliteit Aalst" ;
   ext:filterData "{...AgendaItemsParams JSON...}" ;
-  ext:notify true ;            # toggled from the UI; filters with notify=false are skipped in the scan
+  ext:notify true ;            # toggled from the UI; the scan only notifies filters with notify=true
   ext:lastSeenCount 42 ;       # match-count high-water mark; the scan notifies on a positive delta
   dcterms:created "..." ;
   dcterms:modified "..." ;
@@ -96,7 +96,7 @@ The MBP frontend wires this to a temporary "Stuur testnotificatie" button (`Test
 
 ### `POST /send-notifications`  *(internal — do **not** expose via the dispatcher)*
 
-The daily-scan entry point. For every notifiable saved filter (owner has a stored `ext:rijksregisternummer`, `ext:notify` ≠ false):
+The daily-scan entry point. For every notifiable saved filter (owner has a stored `ext:rijksregisternummer`, and `ext:notify` is `true` — filters with `notify=false` **or** no `notify` triple are skipped):
 
 1. Build a mu-search query from `ext:filterData` and ask `/agenda-items/search` for the **current total match count**.
 2. Compare to the stored `ext:lastSeenCount`:
