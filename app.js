@@ -7,11 +7,10 @@ import {
   deleteSavedFilter,
   listAllNotifiableFilters,
   markFilterNotified,
+  updateFilterSeenCount,
 } from './helpers/queries';
-import { countMatchingAgendaItems } from './helpers/search';
+import { countMatchingAgendaItems, usesGeoSearch, hasGeoCoordinates } from './helpers/search';
 import { notifySavedFilterUpdate, notifyTestMessage } from './helpers/notifications';
-
-const DEFAULT_LOOKBACK_HOURS = 24;
 
 async function requireAccount(req, res) {
   const sessionUri = req.headers['mu-session-id'];
@@ -39,13 +38,14 @@ app.post('/saved-filters', async function(req, res) {
   const name = attrs.name || attrs.title;
   const filter = attrs.filter;
   const notify = typeof attrs.notify === 'boolean' ? attrs.notify : true;
+  const count = attrs.count; // current result count the user sees — the notification baseline
 
   if (!filter || typeof filter !== 'object') {
     return res.status(400).json({ error: 'filter is required and must be an object' });
   }
 
   try {
-    const saved = await createSavedFilter({ accountUri: account.accountUri, name, filter, notify });
+    const saved = await createSavedFilter({ accountUri: account.accountUri, name, filter, notify, count });
     return res.status(201).json({ data: { type: 'saved-filters', id: saved.id, attributes: saved } });
   } catch (e) {
     console.error('create saved-filter failed', e);
@@ -58,17 +58,17 @@ app.put('/saved-filters/:id', async function(req, res) {
   if (!account) return;
 
   const attrs = req.body?.data?.attributes || req.body || {};
-  const { name, filter, notify } = attrs;
+  const { name, filter, notify, count } = attrs;
 
-  if (name === undefined && filter === undefined && notify === undefined) {
-    return res.status(400).json({ error: 'at least one of name, filter, notify is required' });
+  if (name === undefined && filter === undefined && notify === undefined && count === undefined) {
+    return res.status(400).json({ error: 'at least one of name, filter, notify, count is required' });
   }
   if (filter !== undefined && (typeof filter !== 'object' || filter === null)) {
     return res.status(400).json({ error: 'filter must be an object' });
   }
 
   try {
-    await updateSavedFilter({ accountUri: account.accountUri, filterId: req.params.id, name, filter, notify });
+    await updateSavedFilter({ accountUri: account.accountUri, filterId: req.params.id, name, filter, notify, count });
     return res.status(204).send();
   } catch (e) {
     console.error('update saved-filter failed', e);
@@ -135,9 +135,11 @@ app.post('/test-notification', async function(req, res) {
 });
 
 // Internal cron endpoint — must NOT be exposed via the dispatcher.
+// Compares each filter's current match count against its stored high-water mark
+// (ext:lastSeenCount) and notifies the owner about the positive delta.
 app.post('/send-notifications', async function(req, res) {
   const startedAt = new Date();
-  const summary = { scanned: 0, notified: 0, skipped: 0, errors: 0 };
+  const summary = { scanned: 0, notified: 0, skipped: 0, baselined: 0, unsupported: 0, errors: 0 };
 
   let filters;
   try {
@@ -149,23 +151,44 @@ app.post('/send-notifications', async function(req, res) {
 
   for (const f of filters) {
     summary.scanned += 1;
-    const since = f.lastNotifiedAt
-      || new Date(Date.now() - DEFAULT_LOOKBACK_HOURS * 3600 * 1000).toISOString();
+
+    // Street/distance filters need stored coordinates to reproduce the geo search.
+    // Older filters saved without coordinates can't be counted accurately — skip them.
+    if (usesGeoSearch(f.filter) && !hasGeoCoordinates(f.filter)) {
+      summary.unsupported += 1;
+      console.log(`send-notifications: filter ${f.id} skipped (geo search without stored coordinates)`);
+      continue;
+    }
 
     try {
-      const count = await countMatchingAgendaItems(f.filter, since);
-      if (count > 0) {
+      const currentCount = await countMatchingAgendaItems(f.filter);
+      const previousCount = f.lastSeenCount;
+
+      // No baseline yet (e.g. filter saved before this feature): record one, don't notify.
+      if (previousCount === null) {
+        await updateFilterSeenCount(f.uri, currentCount);
+        summary.baselined += 1;
+        continue;
+      }
+
+      const delta = currentCount - previousCount;
+      if (delta > 0) {
         await notifySavedFilterUpdate({
           rrn: f.rrn,
           filterId: f.id,
           filterName: f.name,
-          newMatchCount: count,
+          newMatchCount: delta,
         });
         await markFilterNotified(f.uri, startedAt);
         summary.notified += 1;
-        console.log(`Notified filter ${f.id} (${count} new matches)`);
+        console.log(`Notified filter ${f.id} (${delta} new of ${currentCount})`);
       } else {
         summary.skipped += 1;
+      }
+
+      // Always re-baseline to the current count so the next run compares against it.
+      if (currentCount !== previousCount) {
+        await updateFilterSeenCount(f.uri, currentCount);
       }
     } catch (e) {
       summary.errors += 1;

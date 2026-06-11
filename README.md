@@ -1,6 +1,6 @@
 # mbp-push-notification-service
 
-Stores **saved filters** for LokaalBeslist users (keyed to the MBP-authenticated account) and runs a **daily scan** that checks whether each saved filter has new matching agenda points. When it does, this service calls `mbp-notification-service` to deliver an inbox message via the Digitaal Vlaanderen Notificaties module.
+Stores **saved filters** for LokaalBeslist users (keyed to the MBP-authenticated account) and runs a **daily scan** that checks whether each saved filter has new matching agenda points. When it does, this service calls `mbp-notification-delivery-service` to deliver an inbox message via the Digitaal Vlaanderen Notificaties module.
 
 Part of the [LBLOD](https://lblod.github.io) stack, built on the [mu-semtech](https://mu.semte.ch) microservice framework.
 
@@ -9,10 +9,11 @@ Frontend  ──POST /saved-filters──►  this service (auth via mu-session-
                                      INSERT ext:hasSavedFilter on the account
 
 cron      ──POST /send-notifications──►  this service
-                                          mu-search for new matches per filter
-                                          ──POST /notifications/user──►  mbp-notification-service
+                                          mu-search current match count per filter
+                                          compare to stored ext:lastSeenCount (high-water mark)
+                                          ──POST /notifications/user──►  mbp-notification-delivery-service
                                                                           ──POST /api/v2/notificaties──► Notificaties module
-                                          UPDATE ext:lastNotifiedAt
+                                          UPDATE ext:lastSeenCount (and ext:lastNotifiedAt)
 ```
 
 ## Data model
@@ -28,12 +29,15 @@ Stored in `<http://mu.semte.ch/graphs/sessions>` alongside the account/session t
   dcterms:title "Mobiliteit Aalst" ;
   ext:filterData "{...AgendaItemsParams JSON...}" ;
   ext:notify true ;            # toggled from the UI; filters with notify=false are skipped in the scan
+  ext:lastSeenCount 42 ;       # match-count high-water mark; the scan notifies on a positive delta
   dcterms:created "..." ;
   dcterms:modified "..." ;
-  ext:lastNotifiedAt "..." .   # set by the daily scan
+  ext:lastNotifiedAt "..." .   # timestamp of the last notification (audit)
 ```
 
 `ext:filterData` is the JSON object the LokaalBeslist frontend uses to drive the agenda-items search (`AgendaItemsParams` — `keyword`, `municipalityLabels`, `themeIds`, `governingBodyClassificationIds`, `plannedStartMin/Max`, …). The backend re-executes it via mu-search at scan time.
+
+`ext:lastSeenCount` is the number of matching agenda items at the moment the user last saved/edited the filter (sent by the frontend as `count`). The daily scan recomputes the count and notifies the owner when it has grown, then advances the high-water mark. There is no per-item modified date in the agenda-items index, so this count delta — not a time window — is how "new items" is detected.
 
 ## API
 
@@ -51,11 +55,14 @@ Auth via the `mu-session-id` header set by mu-identifier; the session is looked 
         "municipalityLabels": ["Aalst"],
         "themeIds": ["..."],
         "governingBodyClassificationIds": []
-      }
+      },
+      "count": 42
     }
   }
 }
 ```
+
+`count` (optional) is the number of results the user currently sees for this filter; it's stored as `ext:lastSeenCount` and becomes the baseline for the daily scan. `PUT /saved-filters/:id` accepts `count` too, to re-baseline when the filter is edited.
 
 `201` → `{ data: { type: "saved-filters", id, attributes: { id, uri, name, filter, createdAt } } }`
 
@@ -77,18 +84,32 @@ Updates `name`, `filter` and/or `notify` on one of the caller's saved filters.
 
 Deletes one of the caller's saved filters. `204` on success.
 
+### `POST /test-notification`  *(authenticated)*
+
+Manual end-to-end test. Resolves the calling user's RRN from the session and fires a single fixed "Testnotificatie" through `mbp-notification-delivery-service`. No body required.
+
+- `202` → `{ ok: true }` when the notification was accepted upstream.
+- `409` → `{ error: "no_rrn" }` when the account has no stored `ext:rijksregisternummer` (log in via ACM/IDM with the `rrn`-releasing scope first).
+- `502` → `{ error: "notification_failed" }` when the notification service / Notificaties module rejected the request.
+
+The MBP frontend wires this to a temporary "Stuur testnotificatie" button (`TestNotificationButton`), shown only to authenticated users.
+
 ### `POST /send-notifications`  *(internal — do **not** expose via the dispatcher)*
 
-The daily-scan entry point. For every saved filter whose owning account has a stored `ext:rijksregisternummer`:
+The daily-scan entry point. For every notifiable saved filter (owner has a stored `ext:rijksregisternummer`, `ext:notify` ≠ false):
 
-1. Pick a `since` watermark — `ext:lastNotifiedAt` if set, otherwise `now - 24h`.
-2. Build a mu-search query from `ext:filterData` and ask `/agenda-items/search` for the count of items modified since the watermark.
-3. If `count > 0`, POST to `mbp-notification-service`'s `POST /notifications/user` with the user's RRN, a Dutch title/body referencing the filter name and count, and a deep-link back to the filter view.
-4. Advance `ext:lastNotifiedAt` to the start of the run so the next scan only sees newer changes.
+1. Build a mu-search query from `ext:filterData` and ask `/agenda-items/search` for the **current total match count**.
+2. Compare to the stored `ext:lastSeenCount`:
+   - no baseline yet → record the current count, don't notify (`baselined`);
+   - count grew → POST to `mbp-notification-delivery-service`'s `POST /notifications/user` with the user's RRN and the **delta** (e.g. "5 new agenda items"), plus a deep-link to the filter;
+   - otherwise → skip.
+3. Advance `ext:lastSeenCount` to the current count so the next run compares against it.
 
 Filters belonging to accounts without an RRN are skipped (the SSO service back-fills the RRN on next login if the ACM/IDM scope exposes it).
 
-Response: `{ ok, scanned, notified, skipped, errors }`.
+Response: `{ ok, scanned, notified, skipped, baselined, unsupported, errors }` (`unsupported` = street/distance geo filters the scan can't reproduce).
+
+Triggered on a schedule by the `mbp-push-notifications-cron` sidecar (see docker-compose) — this endpoint is internal and is not exposed via the dispatcher.
 
 ## Configuration
 
@@ -96,7 +117,7 @@ Response: `{ ok, scanned, notified, skipped, errors }`.
 |---|---|---|---|
 | `MU_SPARQL_ENDPOINT` | yes | — | SPARQL endpoint of the triplestore (set by the stack) |
 | `SEARCH_BASE_URL` | no | `http://search` | mu-search service URL |
-| `NOTIFICATION_SERVICE_URL` | no | `http://notification` | URL of `mbp-notification-service` |
+| `NOTIFICATION_SERVICE_URL` | no | `http://notification` | URL of `mbp-notification-delivery-service` |
 | `LOKAALBESLIST_PUBLIC_URL` | no | `https://lokaalbeslist.be` | Used to build the deep-link in the notification |
 
 ## Wiring into the stack
@@ -114,6 +135,9 @@ push-notification:
 Add to `mbp-dispatcher.ex` (only the CRUD routes — `/send-notifications` stays internal):
 
 ```elixir
+post "/test-notification", @json do
+  Proxy.forward conn, [], "http://push-notification/test-notification"
+end
 post "/saved-filters", @json do
   Proxy.forward conn, [], "http://push-notification/saved-filters"
 end
@@ -153,5 +177,7 @@ Anonymous users keep working off localStorage only and won't get daily notificat
 ## Assumptions worth verifying
 
 - The mu-search index name for agenda items is `agenda-items` (matches `app-burgernabije-besluitendatabank/config/search/config.json`).
-- Agenda items expose a `modified` date in the search index — used for the "new since last scan" filter. If the actual field is different (e.g. `created`, `dct_modified`), adjust `helpers/search.js`.
-- `helpers/search.js` translates the most common `AgendaItemsParams` fields. New filter fields added on the frontend won't be honoured until the translator is extended; this is the same set of fields handled by `frontend/app/utils/search/agenda-items-query.ts`.
+- `helpers/search.js` mirrors `frontend-lokaal-beslist-mijn-burgerprofiel`'s `buildFilters` and applies: `keyword` (incl. title-only and the `-title*`/`-description*` negations, via fuzzy), `themeIds` (`:terms:search_theme_id`), `governingBodyClassificationIds`, `plannedStartMin/Max`, `status` (Behandeld → `:has:session_started_at`, Niet behandeld → `:has-no:…`), and `municipalityLabels`/`provinceLabels` — resolved to `search_location_id` uuids via `resolveLocationIdsForLabels` (SPARQL lookup of `prov:Location` by `rdfs:label`). Keep this in sync if the frontend query changes.
+- **Street/distance (geo) filters** are reproduced via `:geo:address_geometry_coord` using the Lambert-72 coordinates the frontend resolves for `street` and persists on the saved filter (`addressXLambert72`/`addressYLambert72` in `ext:filterData`, written by `filter-service.withResolvedCoordinates`). Filters saved **before** this — geo filters without stored coordinates — are **skipped** (counted as `unsupported`) rather than counted inaccurately; re-saving such a filter back-fills the coordinates.
+- The keyword translation uses a fuzzy match for plain keywords; the frontend additionally supports AND/OR/NOT operators. Counts for operator-style keywords may differ slightly.
+- The baseline `count` is computed by the **frontend** at save time; the scan recomputes with the **backend** translator. If the two disagree, the first scan after a save may notify or re-baseline spuriously — it self-corrects on subsequent runs since the scan re-baselines to its own count. To eliminate this, compute the baseline server-side in `createSavedFilter` instead of trusting the frontend `count`.

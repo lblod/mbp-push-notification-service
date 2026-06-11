@@ -1,4 +1,4 @@
-import { sparqlEscapeUri, sparqlEscapeString, sparqlEscapeDateTime } from 'mu';
+import { sparqlEscapeUri, sparqlEscapeString, sparqlEscapeDateTime, sparqlEscapeInt } from 'mu';
 import { querySudo, updateSudo } from '@lblod/mu-auth-sudo';
 
 const SESSIONS_GRAPH = 'http://mu.semte.ch/graphs/sessions';
@@ -23,10 +23,11 @@ export async function resolveAccountFromSession(sessionUri) {
   return { accountUri: binding.account.value, rrn: binding.rrn?.value || null };
 }
 
-export async function createSavedFilter({ accountUri, name, filter, notify = true }) {
+export async function createSavedFilter({ accountUri, name, filter, notify = true, count }) {
   const filterId = crypto.randomUUID();
   const filterUri = `${FILTER_BASE_URI}${filterId}`;
   const now = new Date();
+  const seenCount = normalizeCount(count);
 
   await updateSudo(`
     PREFIX ext:     <http://mu.semte.ch/vocabularies/ext/>
@@ -42,20 +43,22 @@ export async function createSavedFilter({ accountUri, name, filter, notify = tru
           mu:uuid ${sparqlEscapeString(filterId)} ;
           dcterms:title ${sparqlEscapeString(name || 'Naamloze filter')} ;
           ext:filterData ${sparqlEscapeString(JSON.stringify(filter))} ;
-          ext:notify ${notify ? 'true' : 'false'} ;
+          ext:notify ${notify ? 'true' : 'false'} ;${seenCount === null ? '' : `
+          ext:lastSeenCount ${sparqlEscapeInt(seenCount)} ;`}
           dcterms:created ${sparqlEscapeDateTime(now)} ;
           dcterms:modified ${sparqlEscapeDateTime(now)} .
       }
     }
   `);
 
-  return { id: filterId, uri: filterUri, name, filter, notify, createdAt: now.toISOString() };
+  return { id: filterId, uri: filterUri, name, filter, notify, lastSeenCount: seenCount, createdAt: now.toISOString() };
 }
 
-export async function updateSavedFilter({ accountUri, filterId, name, filter, notify }) {
+export async function updateSavedFilter({ accountUri, filterId, name, filter, notify, count }) {
   const now = new Date();
   const deleteFields = [];
   const insertFields = [];
+  const optionalDeletes = [];
 
   if (typeof name === 'string') {
     deleteFields.push(`?filter dcterms:title ?oldTitle .`);
@@ -68,6 +71,13 @@ export async function updateSavedFilter({ accountUri, filterId, name, filter, no
   if (typeof notify === 'boolean') {
     deleteFields.push(`?filter ext:notify ?oldNotify .`);
     insertFields.push(`?filter ext:notify ${notify ? 'true' : 'false'} .`);
+  }
+  const seenCount = normalizeCount(count);
+  if (seenCount !== null) {
+    // Editing the filter re-baselines the high-water mark to the count the user sees now.
+    deleteFields.push(`?filter ext:lastSeenCount ?oldSeenCount .`);
+    insertFields.push(`?filter ext:lastSeenCount ${sparqlEscapeInt(seenCount)} .`);
+    optionalDeletes.push(`OPTIONAL { ?filter ext:lastSeenCount ?oldSeenCount }`);
   }
   if (!insertFields.length) return;
 
@@ -96,6 +106,7 @@ export async function updateSavedFilter({ accountUri, filterId, name, filter, no
         OPTIONAL { ?filter ext:filterData ?oldData }
         OPTIONAL { ?filter ext:notify ?oldNotify }
         OPTIONAL { ?filter dcterms:modified ?oldModified }
+        ${optionalDeletes.join('\n        ')}
       }
     }
   `);
@@ -107,7 +118,7 @@ export async function listSavedFiltersForAccount(accountUri) {
     PREFIX mu:      <http://mu.semte.ch/vocabularies/core/>
     PREFIX dcterms: <http://purl.org/dc/terms/>
 
-    SELECT ?filter ?id ?title ?data ?notify ?created ?lastNotifiedAt WHERE {
+    SELECT ?filter ?id ?title ?data ?notify ?created ?lastNotifiedAt ?lastSeenCount WHERE {
       GRAPH ${sparqlEscapeUri(SESSIONS_GRAPH)} {
         ${sparqlEscapeUri(accountUri)} ext:hasSavedFilter ?filter .
         ?filter a ext:SavedFilter ;
@@ -117,6 +128,7 @@ export async function listSavedFiltersForAccount(accountUri) {
                 dcterms:created ?created .
         OPTIONAL { ?filter ext:notify ?notify }
         OPTIONAL { ?filter ext:lastNotifiedAt ?lastNotifiedAt }
+        OPTIONAL { ?filter ext:lastSeenCount ?lastSeenCount }
       }
     } ORDER BY ?created
   `);
@@ -129,6 +141,7 @@ export async function listSavedFiltersForAccount(accountUri) {
     notify: parseSparqlBoolean(b.notify),
     createdAt: b.created.value,
     lastNotifiedAt: b.lastNotifiedAt?.value || null,
+    lastSeenCount: parseSparqlInt(b.lastSeenCount),
   }));
 }
 
@@ -159,7 +172,7 @@ export async function listAllNotifiableFilters() {
     PREFIX mu:      <http://mu.semte.ch/vocabularies/core/>
     PREFIX dcterms: <http://purl.org/dc/terms/>
 
-    SELECT ?account ?rrn ?filter ?id ?title ?data ?lastNotifiedAt ?created WHERE {
+    SELECT ?account ?rrn ?filter ?id ?title ?data ?lastNotifiedAt ?lastSeenCount ?created WHERE {
       GRAPH ${sparqlEscapeUri(SESSIONS_GRAPH)} {
         ?account ext:hasSavedFilter ?filter ;
                  ext:rijksregisternummer ?rrn .
@@ -169,6 +182,7 @@ export async function listAllNotifiableFilters() {
                 ext:filterData ?data ;
                 dcterms:created ?created .
         OPTIONAL { ?filter ext:lastNotifiedAt ?lastNotifiedAt }
+        OPTIONAL { ?filter ext:lastSeenCount ?lastSeenCount }
         FILTER NOT EXISTS { ?filter ext:notify false }
       }
     }
@@ -183,6 +197,7 @@ export async function listAllNotifiableFilters() {
     filter: safeJson(b.data.value),
     createdAt: b.created.value,
     lastNotifiedAt: b.lastNotifiedAt?.value || null,
+    lastSeenCount: parseSparqlInt(b.lastSeenCount),
   }));
 }
 
@@ -204,6 +219,75 @@ export async function markFilterNotified(filterUri, at) {
       }
     }
   `);
+}
+
+// Persist the latest observed match count as the new high-water mark for the filter.
+export async function updateFilterSeenCount(filterUri, count) {
+  const seenCount = normalizeCount(count);
+  if (seenCount === null) return;
+
+  await updateSudo(`
+    PREFIX ext: <http://mu.semte.ch/vocabularies/ext/>
+
+    DELETE {
+      GRAPH ${sparqlEscapeUri(SESSIONS_GRAPH)} {
+        ${sparqlEscapeUri(filterUri)} ext:lastSeenCount ?old .
+      }
+    } INSERT {
+      GRAPH ${sparqlEscapeUri(SESSIONS_GRAPH)} {
+        ${sparqlEscapeUri(filterUri)} ext:lastSeenCount ${sparqlEscapeInt(seenCount)} .
+      }
+    } WHERE {
+      GRAPH ${sparqlEscapeUri(SESSIONS_GRAPH)} {
+        OPTIONAL { ${sparqlEscapeUri(filterUri)} ext:lastSeenCount ?old }
+      }
+    }
+  `);
+}
+
+// Resolve municipality/province labels (as stored in ext:filterData) to the
+// werkingsgebied location uuids used by the agenda-items search index
+// (search_location_id). Mirrors the frontend's municipality/province list lookup,
+// which matches prov:Location by rdfs:label (case-insensitive).
+export async function resolveLocationIdsForLabels(labels) {
+  const wanted = (Array.isArray(labels) ? labels : [])
+    .map((l) => (typeof l === 'string' ? l.trim() : ''))
+    .filter(Boolean)
+    .map((l) => l.toLowerCase());
+  if (!wanted.length) return [];
+
+  const values = wanted.map((l) => sparqlEscapeString(l)).join(' ');
+
+  const result = await querySudo(`
+    PREFIX prov: <http://www.w3.org/ns/prov#>
+    PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+    PREFIX mu:   <http://mu.semte.ch/vocabularies/core/>
+
+    SELECT DISTINCT ?uuid WHERE {
+      VALUES ?wanted { ${values} }
+      GRAPH ?g {
+        ?location a prov:Location ;
+                  rdfs:label ?label ;
+                  mu:uuid ?uuid .
+      }
+      FILTER(LCASE(STR(?label)) = ?wanted)
+    }
+  `);
+
+  return result.results.bindings.map((b) => b.uuid.value);
+}
+
+// Coerce an incoming count to a non-negative integer, or null when absent/invalid.
+function normalizeCount(count) {
+  if (count === undefined || count === null || count === '') return null;
+  const n = Number(count);
+  return Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : null;
+}
+
+function parseSparqlInt(binding) {
+  if (!binding) return null;
+  const n = Number(binding.value);
+  return Number.isFinite(n) ? Math.trunc(n) : null;
 }
 
 function safeJson(text) {
