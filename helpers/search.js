@@ -105,6 +105,18 @@ function applyStatus(params, filter) {
 }
 
 export async function countMatchingAgendaItems(filter) {
+  const body = await searchAgendaItems(filter);
+  return body?.count ?? body?.meta?.count ?? 0;
+}
+
+// TEST helper: returns the uuid (mu-search id) of one agenda item currently matching the
+// filter, so it can be cloned to grow the filter's count. Null when the filter has no matches.
+export async function findOneMatchingAgendaItemId(filter) {
+  const body = await searchAgendaItems(filter);
+  return body?.data?.[0]?.id ?? null;
+}
+
+async function searchAgendaItems(filter) {
   const params = await buildAgendaItemSearchParams(filter);
   const url = `${SEARCH_BASE_URL}/agenda-items/search?${params.toString()}`;
 
@@ -117,6 +129,5 @@ export async function countMatchingAgendaItems(filter) {
   if (!response.ok) {
     throw new Error(`mu-search returned ${response.status} for ${url}`);
   }
-  const body = await response.json();
-  return body?.count ?? body?.meta?.count ?? 0;
+  return response.json();
 }

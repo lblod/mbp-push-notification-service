@@ -277,6 +277,53 @@ export async function resolveLocationIdsForLabels(labels) {
   return result.results.bindings.map((b) => b.uuid.value);
 }
 
+// TEST-ONLY: clone an existing agenda item (matched by uuid) to a new test URI, copying every
+// triple except mu:uuid so it matches the same filters. Goes through mu-auth (updateSudo) so the
+// delta-notifier reindexes mu-search automatically. The clone is tagged ext:cronTestMarker.
+export async function cloneAgendaItemForTest(sourceUuid) {
+  const newUuid = crypto.randomUUID();
+  const newUri = `http://data.lblod.info/id/agendapunten/cron-test-${newUuid}`;
+
+  await updateSudo(`
+    PREFIX mu:      <http://mu.semte.ch/vocabularies/core/>
+    PREFIX besluit: <http://data.vlaanderen.be/ns/besluit#>
+    PREFIX ext:     <http://mu.semte.ch/vocabularies/ext/>
+
+    INSERT {
+      GRAPH ?g {
+        ${sparqlEscapeUri(newUri)} ?p ?o ;
+            mu:uuid ${sparqlEscapeString(newUuid)} ;
+            ext:cronTestMarker "true" .
+      }
+    } WHERE {
+      GRAPH ?g {
+        ?src a besluit:Agendapunt ;
+             mu:uuid ${sparqlEscapeString(sourceUuid)} ;
+             ?p ?o .
+        FILTER(?p != mu:uuid)
+      }
+    }
+  `);
+
+  return { uri: newUri, uuid: newUuid };
+}
+
+// TEST-ONLY: remove every agenda item created by cloneAgendaItemForTest.
+export async function deleteTestAgendaItems() {
+  await updateSudo(`
+    PREFIX ext: <http://mu.semte.ch/vocabularies/ext/>
+
+    DELETE {
+      GRAPH ?g { ?s ?p ?o }
+    } WHERE {
+      GRAPH ?g {
+        ?s ext:cronTestMarker "true" ;
+           ?p ?o .
+      }
+    }
+  `);
+}
+
 // Coerce an incoming count to a non-negative integer, or null when absent/invalid.
 function normalizeCount(count) {
   if (count === undefined || count === null || count === '') return null;

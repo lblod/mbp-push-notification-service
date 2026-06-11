@@ -8,8 +8,15 @@ import {
   listAllNotifiableFilters,
   markFilterNotified,
   updateFilterSeenCount,
+  cloneAgendaItemForTest,
+  deleteTestAgendaItems,
 } from './helpers/queries';
-import { countMatchingAgendaItems, usesGeoSearch, hasGeoCoordinates } from './helpers/search';
+import {
+  countMatchingAgendaItems,
+  usesGeoSearch,
+  hasGeoCoordinates,
+  findOneMatchingAgendaItemId,
+} from './helpers/search';
 import { notifySavedFilterUpdate, notifyTestMessage } from './helpers/notifications';
 
 async function requireAccount(req, res) {
@@ -134,6 +141,53 @@ app.post('/test-notification', async function(req, res) {
   }
 });
 
+// TEST-ONLY, internal (not exposed via the dispatcher), gated by ENABLE_TEST_ENDPOINTS.
+// Clones an agenda item matching a filter so its scan count grows by one — used to verify
+// the daily-scan/cron end to end. Pair with DELETE /test-agendapunt to clean up.
+function testEndpointsEnabled() {
+  return process.env.ENABLE_TEST_ENDPOINTS === 'true';
+}
+
+app.post('/test-agendapunt', async function(req, res) {
+  if (!testEndpointsEnabled()) return res.status(404).json({ error: 'not_found' });
+
+  const attrs = req.body?.data?.attributes || req.body || {};
+  try {
+    let sourceUuid = attrs.sourceId;
+
+    if (!sourceUuid && attrs.filterId) {
+      const filters = await listAllNotifiableFilters();
+      const f = filters.find((x) => x.id === attrs.filterId);
+      if (!f) return res.status(404).json({ error: 'filter_not_found' });
+      sourceUuid = await findOneMatchingAgendaItemId(f.filter);
+      if (!sourceUuid) return res.status(404).json({ error: 'no_matching_agenda_item' });
+    }
+    if (!sourceUuid) {
+      return res.status(400).json({ error: 'filterId or sourceId is required' });
+    }
+
+    const created = await cloneAgendaItemForTest(sourceUuid);
+    console.log(`test-agendapunt: cloned ${sourceUuid} -> ${created.uuid}`);
+    return res.status(201).json({ ok: true, clonedFrom: sourceUuid, ...created });
+  } catch (e) {
+    console.error('test-agendapunt insert failed', e);
+    return res.status(500).json({ error: 'internal_error', message: e.message });
+  }
+});
+
+app.delete('/test-agendapunt', async function(req, res) {
+  if (!testEndpointsEnabled()) return res.status(404).json({ error: 'not_found' });
+
+  try {
+    await deleteTestAgendaItems();
+    console.log('test-agendapunt: removed all cron-test agenda items');
+    return res.status(200).json({ ok: true });
+  } catch (e) {
+    console.error('test-agendapunt delete failed', e);
+    return res.status(500).json({ error: 'internal_error', message: e.message });
+  }
+});
+
 // Internal cron endpoint — must NOT be exposed via the dispatcher.
 // Compares each filter's current match count against its stored high-water mark
 // (ext:lastSeenCount) and notifies the owner about the positive delta.
@@ -184,6 +238,7 @@ app.post('/send-notifications', async function(req, res) {
         console.log(`Notified filter ${f.id} (${delta} new of ${currentCount})`);
       } else {
         summary.skipped += 1;
+        console.log(`send-notifications: filter ${f.id} skipped (count ${currentCount} ≤ baseline ${previousCount}, no new items)`);
       }
 
       // Always re-baseline to the current count so the next run compares against it.
