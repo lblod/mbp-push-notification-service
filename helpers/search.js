@@ -59,7 +59,8 @@ async function applyLocationOrGeo(params, filter) {
     if (hasGeoCoordinates(filter)) {
       const x = Number(filter.addressXLambert72);
       const y = Number(filter.addressYLambert72);
-      const km = Number(filter.distance) > 0 ? Number(filter.distance) : 50;
+      // distanceKm is the resolved radius (the frontend's `distance` is an option id, not km).
+      const km = Number(filter.distanceKm) > 0 ? Number(filter.distanceKm) : 50;
       params.set('filter[:geo:address_geometry_coord]', `${x}, ${y},${km}km`);
     }
     return;
