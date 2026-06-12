@@ -84,16 +84,6 @@ Updates `name`, `filter` and/or `notify` on one of the caller's saved filters.
 
 Deletes one of the caller's saved filters. `204` on success.
 
-### `POST /test-notification`  *(authenticated)*
-
-Manual end-to-end test. Resolves the calling user's RRN from the session and fires a single fixed "Testnotificatie" through `mbp-notification-delivery-service`. No body required.
-
-- `202` → `{ ok: true }` when the notification was accepted upstream.
-- `409` → `{ error: "no_rrn" }` when the account has no stored `ext:rijksregisternummer` (log in via ACM/IDM with the `rrn`-releasing scope first).
-- `502` → `{ error: "notification_failed" }` when the notification service / Notificaties module rejected the request.
-
-The MBP frontend wires this to a temporary "Stuur testnotificatie" button (`TestNotificationButton`), shown only to authenticated users.
-
 ### `POST /send-notifications`  *(internal — do **not** expose via the dispatcher)*
 
 The daily-scan entry point. For every notifiable saved filter (owner has a stored `ext:rijksregisternummer`, and `ext:notify` is `true` — filters with `notify=false` **or** no `notify` triple are skipped):
@@ -135,9 +125,6 @@ push-notification:
 Add to `mbp-dispatcher.ex` (only the CRUD routes — `/send-notifications` stays internal):
 
 ```elixir
-post "/test-notification", @json do
-  Proxy.forward conn, [], "http://push-notification/test-notification"
-end
 post "/saved-filters", @json do
   Proxy.forward conn, [], "http://push-notification/saved-filters"
 end
