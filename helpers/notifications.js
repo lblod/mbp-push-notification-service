@@ -48,6 +48,19 @@ function buildFilterDeepLink(filter) {
   return qs ? `${LOKAALBESLIST_PUBLIC_URL}/?${qs}` : LOKAALBESLIST_PUBLIC_URL;
 }
 
+// Fire a simple, self-contained notification to a user — used by the manual
+// test endpoint to verify the end-to-end delivery path without a saved filter.
+export async function notifyTestMessage({ rrn }) {
+  return postUserNotification({
+    rrn,
+    title: 'Testnotificatie LokaalBeslist',
+    body: 'Dit is een testnotificatie. Als u dit bericht ziet, werkt de notificatieketen.',
+    linkUrl: LOKAALBESLIST_PUBLIC_URL,
+    linkLabel: 'Open LokaalBeslist',
+    transactieId: `lokaalbeslist:test:${Date.now()}`,
+  });
+}
+
 async function postUserNotification(payload) {
   let response;
   try {

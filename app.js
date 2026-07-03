@@ -10,7 +10,7 @@ import {
   updateFilterSeenCount,
 } from './helpers/queries';
 import { countMatchingAgendaItems, usesGeoSearch, hasGeoCoordinates } from './helpers/search';
-import { notifySavedFilterUpdate } from './helpers/notifications';
+import { notifySavedFilterUpdate, notifyTestMessage } from './helpers/notifications';
 
 async function requireAccount(req, res) {
   const sessionUri = req.headers['mu-session-id'];
@@ -101,6 +101,36 @@ app.delete('/saved-filters/:id', async function(req, res) {
   } catch (e) {
     console.error('delete saved-filter failed', e);
     return res.status(500).json({ error: 'internal_error' });
+  }
+});
+
+// Manual test endpoint — sends a simple notification to the signed-in user.
+// Authenticated via mu-session-id; resolves the caller's RRN from the session.
+app.post('/test-notification', async function(req, res) {
+  const account = await requireAccount(req, res);
+  if (!account) return;
+
+  if (!account.rrn) {
+    return res.status(409).json({
+      error: 'no_rrn',
+      message: 'No rijksregisternummer is stored for this account; cannot address a notification.',
+    });
+  }
+
+  // TEST ONLY: optional server-side delay so you can close/background the app
+  // before the notification is actually sent. Set TEST_NOTIFICATION_DELAY_MS (e.g. 15000).
+  const delayMs = Number(process.env.TEST_NOTIFICATION_DELAY_MS) || 0;
+  if (delayMs > 0) {
+    console.log(`test-notification: waiting ${delayMs}ms before sending to ${account.rrn.slice(-4)}`);
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+
+  try {
+    await notifyTestMessage({ rrn: account.rrn });
+    return res.status(202).json({ ok: true });
+  } catch (e) {
+    console.error('test-notification failed', e);
+    return res.status(502).json({ error: 'notification_failed', message: e.message });
   }
 });
 
